@@ -1,0 +1,75 @@
+# PST_BRIDGE - G1 exploratoire, uniquement sur fixture publique libyal/testdata.
+# Aucun PST/SQLite du Cabinet Matthias; ni Outlook, ni credentials, ni secrets.
+name: G1 libpff - PST public - manuel
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha256:
+        description: "SHA-256 attendu du fichier public outlook.pst (64 caracteres hexadecimaux)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  smoke_public_only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Telecharger et verifier le PST public AVANT tout lecteur
+        shell: bash
+        env:
+          EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
+        run: |
+          set -Eeuo pipefail
+          shopt -s nocasematch
+          if [[ ! "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo 'STOP: expected_sha256 absent ou invalide'; exit 1
+          fi
+          scratch="${RUNNER_TEMP}/g1_public_fixture"
+          mkdir -p "$scratch"
+          curl --fail --location --silent --show-error \
+            --proto '=https' --tlsv1.2 --max-time 40 --max-filesize 1000000 \
+            'https://raw.githubusercontent.com/libyal/testdata/main/pst/outlook.pst' \
+            --output "$scratch/outlook.pst"
+          actual="$(sha256sum "$scratch/outlook.pst" | cut -d' ' -f1)"
+          echo "source=https://github.com/libyal/testdata/blob/main/pst/outlook.pst"
+          echo "downloaded_size=$(stat -c %s "$scratch/outlook.pst")"
+          echo "actual_sha256=$actual"
+          if [[ "${actual,,}" != "${EXPECTED_SHA256,,}" ]]; then
+            echo 'STOP: SHA256_MISMATCH - PAS DE LECTURE PST'; exit 1
+          fi
+          if [[ "$(head -c 4 "$scratch/outlook.pst")" != '!BDN' ]]; then
+            echo 'STOP: PST_SIGNATURE_MISMATCH'; exit 1
+          fi
+          echo 'SHA256_REFERENCE_VERIFIED=PASS'
+
+      - name: Installer les outils Ubuntu et tracer leurs versions
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y --no-install-recommends pff-tools
+          echo '=== VERSIONS EXACTES ==='
+          dpkg-query -W -f='${Package} ${Version}\n' pff-tools
+          pffinfo -V
+          pffexport -V
+
+      - name: Exploration pffinfo et pffexport du fichier public seulement
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          scratch="${RUNNER_TEMP}/g1_public_fixture"
+          echo '=== PST PUBLIC : pffinfo ==='
+          timeout 90s pffinfo "$scratch/outlook.pst"
+          echo '=== PST PUBLIC : pffexport ==='
+          timeout 120s pffexport -t "$scratch/export_public" "$scratch/outlook.pst"
+          echo '=== INVENTAIRE FICHIERS EXPORTES (PUBLICS UNIQUEMENT) ==='
+          find "$scratch" -maxdepth 4 -type f -printf '%P\t%s bytes\n' | head -80
+          echo 'G1_PUBLIC_LIBPFF_SMOKE=PASS'
+          echo 'OUTLOOK_ENTRYID_EQUIVALENCE=NOT_PROVEN'
+          echo 'OUTLOOK_STOREID_EQUIVALENCE=NOT_PROVEN'
+          echo 'PST_SQLITE_FRESHNESS=NOT_PROVEN'
