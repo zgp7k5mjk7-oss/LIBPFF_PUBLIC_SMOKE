@@ -1,14 +1,10 @@
-# PST_BRIDGE - G1 exploratoire, uniquement sur fixture publique libyal/testdata.
-# Aucun PST/SQLite du Cabinet Matthias; ni Outlook, ni credentials, ni secrets.
+# PST_BRIDGE G1 - lecture exploratoire publique UNIQUEMENT.
+# Pas de fichier de Cabinet Matthias, PST TEST, SQLite, Outlook ou secret.
+# Le PST est verifie par SHA-256 contre une copie issue d'un commit Git fige.
 name: G1 libpff - PST public - manuel
 
 on:
   workflow_dispatch:
-    inputs:
-      expected_sha256:
-        description: "SHA-256 attendu du fichier public outlook.pst (64 caracteres hexadecimaux)"
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -18,57 +14,69 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - name: Telecharger et verifier le PST public AVANT tout lecteur
+      - name: Acquerir et verifier le PST public avant lecture
         shell: bash
-        env:
-          EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
         run: |
           set -Eeuo pipefail
-          shopt -s nocasematch
-          if [[ ! "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
-            echo 'STOP: expected_sha256 absent ou invalide'; exit 1
-          fi
+          readonly commit='c3631ff17ce4ae6798ed9abd065c6a67ad626bce'
           scratch="${RUNNER_TEMP}/g1_public_fixture"
           mkdir -p "$scratch"
-          curl --fail --location --silent --show-error \
-            --proto '=https' --tlsv1.2 --max-time 40 --max-filesize 1000000 \
-            'https://raw.githubusercontent.com/libyal/testdata/main/pst/outlook.pst' \
+          echo "OFFICIAL_SOURCE=https://github.com/libyal/testdata"
+          echo "PINNED_SOURCE_COMMIT=$commit"
+          echo '=== Lire la reference Git figee ==='
+          timeout 120s git clone --quiet --no-checkout \
+            https://github.com/libyal/testdata.git "$scratch/upstream"
+          git -C "$scratch/upstream" cat-file -e "${commit}^{commit}"
+          git -C "$scratch/upstream" show "${commit}:pst/outlook.pst" \
+            > "$scratch/reference_outlook.pst"
+          echo '=== Telecharger uniquement ce meme fichier a ce commit ==='
+          curl --fail --location --silent --show-error --retry 1 \
+            --proto '=https' --tlsv1.2 --max-time 45 --max-filesize 1000000 \
+            "https://raw.githubusercontent.com/libyal/testdata/${commit}/pst/outlook.pst" \
             --output "$scratch/outlook.pst"
-          actual="$(sha256sum "$scratch/outlook.pst" | cut -d' ' -f1)"
-          echo "source=https://github.com/libyal/testdata/blob/main/pst/outlook.pst"
-          echo "downloaded_size=$(stat -c %s "$scratch/outlook.pst")"
-          echo "actual_sha256=$actual"
-          if [[ "${actual,,}" != "${EXPECTED_SHA256,,}" ]]; then
-            echo 'STOP: SHA256_MISMATCH - PAS DE LECTURE PST'; exit 1
+          echo '=== Verification taille, SHA-256 et identite binaire ==='
+          test "$(stat -c %s "$scratch/outlook.pst")" -gt 0
+          test "$(stat -c %s "$scratch/outlook.pst")" -le 1000000
+          ref_sha="$(sha256sum "$scratch/reference_outlook.pst" | cut -d' ' -f1)"
+          dl_sha="$(sha256sum "$scratch/outlook.pst" | cut -d' ' -f1)"
+          echo "REFERENCE_SHA256=$ref_sha"
+          echo "DOWNLOADED_SHA256=$dl_sha"
+          echo "PUBLIC_FILE_SIZE=$(stat -c %s "$scratch/outlook.pst")"
+          if [[ "$ref_sha" != "$dl_sha" ]]; then
+            echo 'STOP: SHA256_MISMATCH; AUCUNE LECTURE PST'; exit 1
+          fi
+          if ! cmp -s "$scratch/reference_outlook.pst" "$scratch/outlook.pst"; then
+            echo 'STOP: BINARY_MISMATCH; AUCUNE LECTURE PST'; exit 1
           fi
           if [[ "$(head -c 4 "$scratch/outlook.pst")" != '!BDN' ]]; then
-            echo 'STOP: PST_SIGNATURE_MISMATCH'; exit 1
+            echo 'STOP: PST_SIGNATURE_MISMATCH; AUCUNE LECTURE PST'; exit 1
           fi
-          echo 'SHA256_REFERENCE_VERIFIED=PASS'
+          echo 'PUBLIC_PST_SHA256_COMPARISON=PASS'
+          echo 'IMPORTANT: SHA-256 compare a un objet Git epingle; non equivalent a une attestation externe independante.'
 
-      - name: Installer les outils Ubuntu et tracer leurs versions
+      - name: Installer libpff et tracer les versions
         shell: bash
         run: |
           set -Eeuo pipefail
           export DEBIAN_FRONTEND=noninteractive
           sudo apt-get update -qq
           sudo apt-get install -qq -y --no-install-recommends pff-tools
-          echo '=== VERSIONS EXACTES ==='
+          echo '=== VERSIONS ==='
           dpkg-query -W -f='${Package} ${Version}\n' pff-tools
           pffinfo -V
           pffexport -V
 
-      - name: Exploration pffinfo et pffexport du fichier public seulement
+      - name: Lecture exploratoire du seul PST public verifie
         shell: bash
         run: |
           set -Eeuo pipefail
           scratch="${RUNNER_TEMP}/g1_public_fixture"
-          echo '=== PST PUBLIC : pffinfo ==='
+          echo '=== INVENTAIRE pffinfo ==='
           timeout 90s pffinfo "$scratch/outlook.pst"
-          echo '=== PST PUBLIC : pffexport ==='
+          echo '=== EXTRACTION pffexport ==='
           timeout 120s pffexport -t "$scratch/export_public" "$scratch/outlook.pst"
-          echo '=== INVENTAIRE FICHIERS EXPORTES (PUBLICS UNIQUEMENT) ==='
-          find "$scratch" -maxdepth 4 -type f -printf '%P\t%s bytes\n' | head -80
+          echo '=== INVENTAIRE DES EXPORTS ==='
+          find "$scratch" -maxdepth 4 -type f -printf '%P\t%s bytes\n' | sed -n '1,80p'
           echo 'G1_PUBLIC_LIBPFF_SMOKE=PASS'
           echo 'OUTLOOK_ENTRYID_EQUIVALENCE=NOT_PROVEN'
           echo 'OUTLOOK_STOREID_EQUIVALENCE=NOT_PROVEN'
