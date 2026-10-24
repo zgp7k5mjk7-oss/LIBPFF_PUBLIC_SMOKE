@@ -1,0 +1,66 @@
+name: G1 - Compilation cible libpff sans PST
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout lecture seule
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verifier le perimetre sans PST ni donnees reelles
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f g1_source/libpff_backend.c
+          actual="$(sha256sum g1_source/libpff_backend.c | cut -d ' ' -f1)"
+          test "$actual" = "d73d966800429d2ecfac5efd0d91a1963e276a187d8412167a4191361c274d3a"
+          # Aucun corpus et aucune base ne doit etre joint au present build.
+          if find g1_source -type f \( -iname '*.pst' -o -iname '*.ost' -o -iname '*.sqlite*' -o -iname '*.db' \) | grep -q .; then
+            echo 'STOP: fichier de donnees inattendu dans g1_source' >&2
+            exit 2
+          fi
+          echo "G1_SOURCE_SHA256=$actual"
+
+      - name: Installer uniquement les en-tetes et la bibliotheque libpff epingles
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libpff1t64=20180714-3.1build1 libpff-dev=20180714-3.1build1
+          dpkg-query -W -f='${Package}=${Version}\n' libpff1t64 libpff-dev
+          sha256sum /usr/include/libpff.h
+          sha256sum /usr/lib/x86_64-linux-gnu/libpff.so || true
+
+      - name: Verifier API et compiler sans executer le candidat
+        shell: bash
+        run: |
+          set -euo pipefail
+          h=/usr/include/libpff.h
+          for fn in libpff_file_get_message_store libpff_item_get_identifier libpff_item_get_record_set_by_index libpff_record_set_get_entry_by_type libpff_record_entry_get_data_size libpff_record_entry_get_data libpff_record_set_free libpff_record_entry_free; do
+            grep -q "$fn" "$h" || { echo "API absente: $fn" >&2; exit 3; }
+          done
+          mkdir -p g1_build
+          # Garde autorisant UNIQUEMENT la tentative de compilation sous
+          # l'en-tete epingle: ne vaut ni revue ABI complete ni GO G1.
+          gcc -std=c11 -fPIC -Wall -Wextra -Werror \
+            -DG1_API_REVIEWED=1 '-DG1_REVIEW_SHA256="BUILD_ONLY_20180714_DOC_REVIEW"' \
+            -c g1_source/libpff_backend.c -o g1_build/libpff_backend.o
+          gcc -shared -Wl,-z,defs g1_build/libpff_backend.o -lpff -o g1_build/libg1_candidate.so
+          sha256sum g1_build/libpff_backend.o g1_build/libg1_candidate.so
+          echo 'G1_BACKEND_COMPILE_LINK=PASS (pas de test fonctionnel)'
+
+      - name: Ne jamais publier de binaire comme composant qualifie
+        shell: bash
+        if: always()
+        run: |
+          echo 'G1.3=HOLD — ORACLE OUTLOOK/MAPI ABSENT'
+          echo 'G2=NON SATISFAIT; G3=NON AUTORISE; PREPARE_READY=0; RUN E INTERDIT'
